@@ -28,10 +28,10 @@ extern "C" {
 #endif
 
 /// The semantic version number of this distribution.
-#define O1HEAP_VERSION_MAJOR 2
+#define O1HEAP_VERSION_MAJOR 3
 
 /// The guaranteed alignment depends on the platform pointer width.
-#define O1HEAP_ALIGNMENT (sizeof(void*) * 4U)
+#define O1HEAP_ALIGNMENT (sizeof(void*) * 2U)
 
 /// The definition is private, so the user code can only operate on pointers. This is done to enforce encapsulation.
 typedef struct O1HeapInstance O1HeapInstance;
@@ -41,6 +41,11 @@ typedef struct O1HeapInstance O1HeapInstance;
 /// If assertion checks are not disabled, the library will perform automatic runtime self-diagnostics that trigger
 /// an assertion failure if a heap corruption is detected.
 /// Health checks and validation can be done with o1heapDoInvariantsHold().
+///
+/// TODO NOTICE: Maintenance of this information takes about a dozen cycles at least, which is quite significant
+/// compared to the amount of computation needed to do the actual memory management. In the future, we may add a
+/// preprocessor option that disables diagnostics for the benefit of the most performance-sensitive applications.
+/// If you find this feature relevant for your use case, consider opening a ticket.
 typedef struct
 {
     /// The total amount of memory available for serving allocation requests (heap size).
@@ -112,6 +117,35 @@ void* o1heapAllocate(O1HeapInstance* const handle, const size_t amount);
 /// The function is executed in constant time.
 void o1heapFree(O1HeapInstance* const handle, void* const pointer);
 
+/// Similar to the standard realloc() with a few improvements. Given a previously allocated fragment and a new size,
+/// attempts to resize the fragment.
+///
+/// - If the pointer is NULL, acts as o1heapAllocate(). The complexity is constant.
+///
+/// - If the new_amount is zero, acts as o1heapFree() (n.b.: in realloc() this case is implementation-defined).
+///   The result should be ignored. The complexity is constant.
+///
+/// - If the new_amount is not greater than the old fragment size, the same memory pointer is always returned;
+///   the data is not moved and the fragment is shrunk in place. The complexity is constant.
+///
+/// - If the new_amount is greater than the old fragment but there is enough free space after the fragment
+///   to expand in-place, the fragment is expanded in place and the same pointer is returned; the data is not moved.
+///   The complexity is constant. The contents of the expanded memory is undefined.
+///
+/// - If the new_amount is greater than the old fragment and there is not enough free space after the fragment to
+///   expand in-place, but there is a suitable free space elsewhere, the data is moved and the new pointer is returned.
+///   The complexity is LINEAR (sic!) of the size of the old fragment, as it needs to be memmove()d to the new location.
+///   The library attempts to relocate the data in a nearby or recently used area to improve cache locality.
+///   The new pointer is returned. The new fragment may overlap the original one.
+///
+/// - Otherwise, there is not enough memory to expand the fragment as requested. The old fragment remains valid as-is,
+///   and NULL is returned to indicate failure. The complexity is constant.
+///
+/// To summarize, the only linear-complexity case is when the new_amount is larger and there is not enough free space
+/// following this fragment, necessitating moving the data to a new place; the library avoids this if at all possible.
+/// Every other case is constant-complexity as the data is not moved.
+void* o1heapReallocate(O1HeapInstance* const handle, void* const pointer, const size_t new_amount);
+
 /// Obtains the maximum theoretically possible allocation size for this heap instance.
 /// This is useful when implementing std::allocator_traits<Alloc>::max_size.
 size_t o1heapGetMaxAllocationSize(const O1HeapInstance* const handle);
@@ -127,19 +161,6 @@ bool o1heapDoInvariantsHold(const O1HeapInstance* const handle);
 /// This function merely copies the structure from an internal storage, so it is fast to return.
 /// If the handle pointer is NULL, the behavior is undefined.
 O1HeapDiagnostics o1heapGetDiagnostics(const O1HeapInstance* const handle);
-
-/// Advanced diagnostic hooks; not used by default.
-/// If O1HEAP_TRACE is not defined or is zero, these functions should be left unimplemented.
-/// Iff O1HEAP_TRACE is defined and is nonzero, the library will emit trace events by invoking these functions,
-/// which are to be defined in the application (or linking will fail).
-///
-/// For allocations, note that if the allocated memory pointer is NULL, an allocation failure has occurred.
-/// In this case, the size reported is the number of bytes requested that the allocator could not provide.
-///
-/// When using the pointer provided via o1heapTraceFree(), the pointer memory must not be accessed.
-/// This pointer should only be used for its address.
-extern void o1heapTraceAllocate(O1HeapInstance* const handle, void* const allocated_memory, size_t size);
-extern void o1heapTraceFree(O1HeapInstance* const handle, void* const freed_memory, size_t size);
 
 #ifdef __cplusplus
 }
